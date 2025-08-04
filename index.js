@@ -4,6 +4,7 @@ const cheerio = require("cheerio");
 const { MongoClient } = require("mongodb");
 const cron = require("node-cron");
 const TelegramBot = require("node-telegram-bot-api");
+const fs = require("fs");
 
 // ================== الإعدادات الرئيسية (عدّل هذه القيم) ==================
 
@@ -25,7 +26,7 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const BASE_URL = "https://khamsat.com";
 const MAIN_PAGE_URL = `${BASE_URL}/community/requests`;
 const DELAY_BETWEEN_DETAILS_REQUESTS = 20000; // 20 ثانية
-const CRON_SCHEDULE = "*/20 * * * *"; // كل 20 دقيقة
+const CRON_SCHEDULE = "*/5 * * * *"; // كل 5 دقيقة
 
 // ================== تهيئة بوت التيليجرام و Axios ==================
 
@@ -54,6 +55,30 @@ const apiClient = axios.create({
 });
 
 // ================== الوظائف المساعدة (Helper Functions) ==================
+
+const getDescriptionPage = async (page) => {
+  const { exec } = require("child_process");
+  const util = require("util");
+  const execPromise = util.promisify(exec);
+  const cheerio = require("cheerio");
+
+  try {
+    const { stdout, stderr } = await execPromise(
+      `curl "${page}" -X GET -H "User-Agent: ${USER_AGENT}" -H "Cookie: rack.session=${SESSION_COOKIE}"`
+    );
+
+    if (stderr) {
+      console.warn("⚠ تحذير:", stderr);
+    }
+
+    const $ = cheerio.load(stdout);
+    const description = $("article.replace_urls").first().text().trim();
+    return description;
+  } catch (error) {
+    console.error(`❌ فشل جلب الوصف من ${page}:`, error.message);
+    return "";
+  }
+};
 
 /**
  * دالة مساعدة لتحليل HTML وإرجاع مصفوفة من بيانات المشاريع الأولية
@@ -96,11 +121,8 @@ function parseProjectsFromHTML(html) {
  */
 async function scrapeProjectDescription(projectUrl) {
   try {
-    // console.log(`    - 📄 جاري جلب الوصف من: ${projectUrl}`);
-    // const response = await apiClient.get(projectUrl);
-    // const $ = cheerio.load(response.data);
-    // const description = $("article.replace_urls").first().text().trim();
-    return "لا يمكن العثور على الوصف في الوقت الحالي" || "";
+    const description = await getDescriptionPage(projectUrl);
+    return description || "";
   } catch (error) {
     console.error(`    - ❌ فشل جلب الوصف من ${projectUrl}:`, error.message);
     return "";
@@ -111,18 +133,31 @@ async function scrapeProjectDescription(projectUrl) {
  * دالة لإرسال إشعار تيليجرام
  */
 async function sendTelegramNotification(project) {
+  const shortDescription = project.description.substring(0, 500).trim();
+
   const message = `
-📢 **طلب جديد على خمسات!** 📢
+📢 <b>طلب جديد على خمسات!</b>
 
-<b>العنوان:</b> ${project.title}
-<b>صاحب الطلب:</b> ${project.author}
-<b>الوصف (أول 300 حرف):</b>
-${project.description.substring(0, 300)}...
+<b>📌 العنوان:</b> ${project.title}
+<b>👤 صاحب الطلب:</b> ${project.author}
+<b>📝 الوصف (أول 500 حرف):</b>
+${shortDescription}...
+  `;
 
-<a href="${project.link}">🔗 عرض الطلب الكامل</a>
-    `;
   try {
-    await bot.sendMessage(TELEGRAM_CHAT_ID, message, { parse_mode: "HTML" });
+    await bot.sendMessage(TELEGRAM_CHAT_ID, message, {
+      parse_mode: "HTML",
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "🔗 عرض الطلب",
+              url: project.link,
+            },
+          ],
+        ],
+      },
+    });
     console.log(`- 💬 تم إرسال إشعار تيليجرام للمشروع: "${project.title}"`);
   } catch (error) {
     console.error("❌ فشل إرسال إشعار تيليجرام:", error.message);
@@ -198,9 +233,37 @@ async function scraperCycle() {
 // ================== الجدولة الزمنية ==================
 
 console.log("🕒 السكريبت الشامل جاهز وسيعمل حسب الجدول الزمني.");
-console.log(`⏰ سيتم تنفيذ المهمة كل 20 دقيقة.`);
+console.log(`⏰ سيتم تنفيذ المهمة كل 5 دقائق.`);
 
 cron.schedule(CRON_SCHEDULE, scraperCycle);
 
 // للاختبار الفوري عند تشغيل السكريبت لأول مرة
 scraperCycle();
+
+// curl "https://khamsat.com/community/requests/763480-%D8%AA%D8%B9%D8%AF%D9%8A%D9%84-%D8%A3%D8%BA%D9%84%D9%81%D8%A9-%D8%A3%D9%84%D8%B9%D8%A7%D8%A8-ps4-%D9%84%D8%A5%D8%AE%D9%81%D8%A7%D8%A1-%D8%B5%D9%88%D8%B1-%D8%A7%D9%84%D8%A3%D8%B1%D9%88%D8%A7%D8%AD" -X GET -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36" -H "Cookie: rack.session=xWtalEMiF6DImbKp8xF2ZbywwQTkV3QrDk0FKd6hgDVApVORq2458JL2NNHXolyPsX7SkRBqIRpRy8dy654OpzlMj1qW1cQSq5J7zcyEu63zyrk36CvPH4I%2B%2FKlUguU95UhPjCx772OATu7STJcL4PaCUwMGsJoQI1oYzl0J3P4z1k5miICYyoXzJR681ZK9cRKHuIqVeLkN1Zavq4yDdXc6pQCU8yIa8FrfN86LvNTVjo3ePrvmZzDQj1%2FwIw7esZD7%2F7NilLeDGgLUPUvI4DrAeerVqL5bBvUyLFkUi0xE0lDpXxofJGUWXC04C40FRXkbuBCXfIvZYyFKkV98qQHzhn73GsW5U0ObTjm%2BBybj5n6QzhcmiYgwtvwqoCVayaVL0QBcBYquC38BSbhj6a951N6IxGFp7160TvUDWc93t%2BUlfEeMu5f58ybl47z8VuWQ%2FrsS77bx3FMxg5isiS13n5wTwl%2FtGFyboViuNWWLjaB0gfttlTxFaKKdjhTYpqYGKWLBvjwXzCdGLA5OK6oHGOifha2Sd%2BkWeGYx%2FkkI2oOHhqUGtADIZqqQsI87VO7t%2F5uK%2FDIvV7%2FF%2BzkIYoJ2XCy9wR91LPmD%2FfTJQpU%3D"
+// (async () => {
+//   const { exec } = require("child_process");
+//   const fs = require("fs");
+
+//   // هنا الأمر الحقيقي اللي بيشتغل عندك في الطرفية
+//   const curlScript = `
+// curl "https://khamsat.com/community/requests/763480-%D8%AA%D8%B9%D8%AF%D9%8A%D9%84-%D8%A3%D8%BA%D9%84%D9%81%D8%A9-%D8%A3%D9%84%D8%B9%D8%A7%D8%A8-ps4-%D9%84%D8%A5%D8%AE%D9%81%D8%A7%D8%A1-%D8%B5%D9%88%D8%B1-%D8%A7%D9%84%D8%A3%D8%B1%D9%88%D8%A7%D8%AD" \\
+//  -X GET \\
+//  -H "User-Agent: ${USER_AGENT}" \\
+//  -H "Cookie: rack.session=${SESSION_COOKIE}" > output.html
+// `;
+
+//   fs.writeFileSync("run.sh", curlScript, { encoding: "utf-8" });
+
+//   exec("bash run.sh", (error, stdout, stderr) => {
+//     if (error) {
+//       console.error(`❌ خطأ: ${error.message}`);
+//       return;
+//     }
+//     if (stderr) {
+//       console.error(`⚠ تحذير: ${stderr}`);
+//     }
+
+//     console.log("✔ تم تنفيذ السكربت، شوف output.html");
+//   });
+// })();
